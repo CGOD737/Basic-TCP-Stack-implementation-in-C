@@ -1,4 +1,4 @@
-/* 
+/*
  * Copyright (c) 2020, Jack Lange <jacklange@cs.pitt.edu>
  * All rights reserved.
  *
@@ -50,7 +50,7 @@ __get_tcp_hdr(struct packet * pkt)
 
 
 static inline struct tcp_raw_hdr *
-__make_tcp_hdr(struct packet * pkt, 
+__make_tcp_hdr(struct packet * pkt,
                uint32_t        option_len)
 {
     pkt->layer_4_type    = TCP_PKT;
@@ -139,12 +139,8 @@ print_tcp_header(struct tcp_raw_hdr * tcp_hdr)
 
 }
 
-
-
-
-
-int 
-tcp_listen(struct socket    * sock, 
+int
+tcp_listen(struct socket    * sock,
            struct ipv4_addr * local_addr,
            uint16_t           local_port)
 {
@@ -155,9 +151,9 @@ tcp_listen(struct socket    * sock,
     return -1;
 }
 
-int 
-tcp_connect_ipv4(struct socket    * sock, 
-                 struct ipv4_addr * local_addr, 
+int
+tcp_connect_ipv4(struct socket    * sock,
+                 struct ipv4_addr * local_addr,
                  uint16_t           local_port,
                  struct ipv4_addr * remote_addr,
                  uint16_t           remote_port)
@@ -174,10 +170,21 @@ int
 tcp_send(struct socket * sock)
 {
     struct tcp_state      * tcp_state = petnet_state->tcp_state;
+    struct tcp_connect * con = get_and_lock_tcp_con_from_sock(tcp_state->con_map, sock);
 
-    (void)tcp_state; // delete me
+    if (con->con_state != ESTABLISHED) {
+      log_error("TCP connection is not estalblished\n");
+      goto err;
+    }
 
-    return -1;
+    _send_data_pkt(con);
+
+    return 0;
+
+err:
+  if (cont) put_and_unlock_tcp_con(con);
+
+  return -1;
 }
 
 
@@ -187,7 +194,7 @@ int
 tcp_close(struct socket * sock)
 {
     struct tcp_state      * tcp_state = petnet_state->tcp_state;
-  
+
     (void)tcp_state; // delete me
 
     return 0;
@@ -198,11 +205,11 @@ tcp_close(struct socket * sock)
 
 
 
-int 
+int
 tcp_pkt_rx(struct packet * pkt)
 {
     if (pkt->layer_3_type == IPV4_PKT) {
-   
+
         // Handle IPV4 Packet
 
     }
@@ -210,7 +217,7 @@ tcp_pkt_rx(struct packet * pkt)
     return -1;
 }
 
-int 
+int
 tcp_init(struct petnet * petnet_state)
 {
     struct tcp_state * state = pet_malloc(sizeof(struct tcp_state));
@@ -218,6 +225,6 @@ tcp_init(struct petnet * petnet_state)
     state->con_map  = create_tcp_con_map();
 
     petnet_state->tcp_state = state;
-    
+
     return 0;
 }
