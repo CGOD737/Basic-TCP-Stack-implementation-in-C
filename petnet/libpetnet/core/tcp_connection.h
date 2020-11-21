@@ -59,8 +59,9 @@ struct tcp_connection {
 
     struct socket * sock;
 
-
-
+    //holds a reference to the last_seq_number/last_ack_number sent so the connection can send a proper data buffer header/
+    uint32_t last_seq_num;
+    uint32_t last_ack_num;
 
     /* **********************
      * Students fill in below 
