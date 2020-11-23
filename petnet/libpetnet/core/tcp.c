@@ -27,7 +27,9 @@
 #include "tcp_connection.h"
 #include "packet.h"
 #include "socket.h"
-
+#include <stdint.h>
+#include <stdio.h>
+#include <inttypes.h>
 
 extern int petnet_errno;
 
@@ -75,6 +77,22 @@ __get_payload(struct packet * pkt)
     } else {
         log_error("Unhandled layer 3 packet format\n");
         return NULL;
+    }
+
+}
+static inline uint32_t 
+__get_payload_len(struct packet * pkt)
+{
+    if (pkt->layer_3_type == IPV4_PKT) {
+        struct ipv4_raw_hdr * ipv4_hdr = pkt->layer_3_hdr;
+
+        pkt->payload     = pkt->layer_4_hdr + pkt->layer_4_hdr_len;
+        pkt->payload_len = ntohs(ipv4_hdr->total_len) - (pkt->layer_3_hdr_len + pkt->layer_4_hdr_len);
+
+        return pkt->payload_len;
+    } else {
+        log_error("Unhandled layer 3 packet format\n");
+        return -1;
     }
 
 }
@@ -210,21 +228,21 @@ __send_data_pkt(struct tcp_connection * con)
   }
   //packet/header creation
   pkt = create_empty_packet();
-  tcp_hdr = __make_tcp_hdr(pkt, sizeof(pkt));
+  tcp_hdr = __make_tcp_hdr(pkt, 0);
 
   tcp_hdr->src_port   = htons(con->ipv4_tuple.local_port);
   tcp_hdr->dst_port   = htons(con->ipv4_tuple.remote_port);
-  tcp_hdr->seq_num    = htons(con->last_seq_num);
-  tcp_hdr->ack_num    = htons(con->last_ack_num);
+  tcp_hdr->seq_num    = htonl(con->last_ack_num);
+  tcp_hdr->ack_num    = htonl(con->last_seq_num + 1);
   tcp_hdr->flags.ACK  = 1;
-  tcp_hdr->header_len = htons(sizeof(struct tcp_raw_hdr) + len);
+  tcp_hdr->header_len = 5;
   tcp_hdr->checksum   = 0;
   tcp_hdr->recv_win   = recv_win;
   //sets the packet payload toa a preallocated amount of space and essentially creates the packet
   pkt->payload_len = len;
   pkt->payload = pet_malloc(len);
   //writes the data from the sock->send_buf into the pkt->payload
-  if ( pet_socket_sending_data(con->sock, pkt->payload, pkt->payload_len) != 1 )
+  if ( pet_socket_sending_data(con->sock, pkt->payload, pkt->payload_len) != 0 )
     goto err;
 
   tcp_hdr->checksum = __calculate_chksum(con,con->ipv4_tuple.remote_ip, pkt);
@@ -248,7 +266,7 @@ __send_SYN(struct tcp_connection * con, uint16_t local_port, uint16_t remote_por
   int recv_win;
  //creates packet/tcp header for sending the intial SYN to the server
   pkt    = create_empty_packet();
-  header = __make_tcp_hdr(pkt, sizeof(struct packet));
+  header = __make_tcp_hdr(pkt, 0);
   //designates the recv window
   if ( pet_socket_recv_capacity(sock) > 65535 ){
     recv_win = 65535;
@@ -259,7 +277,7 @@ __send_SYN(struct tcp_connection * con, uint16_t local_port, uint16_t remote_por
   //header field designation
   header->src_port   = htons(local_port);
   header->dst_port   = htons(remote_port);
-  header->seq_num    = htons(0);
+  header->seq_num    = htonl(0);
   header->flags.SYN  = 1;
   header->recv_win   = recv_win;
   header->header_len = 5;
@@ -269,47 +287,6 @@ __send_SYN(struct tcp_connection * con, uint16_t local_port, uint16_t remote_por
   print_tcp_header(header);
   ipv4_pkt_tx(pkt, con->ipv4_tuple.remote_ip);
 }
-
-/*Private method for Sending an ACK response*/
-
-// static void 
-// __send_ACK(struct tcp_connection * con, uint16_t remote_port, uint16_t local_port, uint32_t last_seq_num, uint32_t last_ack_num){
-//   //variable intialization
-//   struct packet * pkt;
-//   struct tcp_raw_hdr    * header     = NULL;
-//   int recv_win;
-//  //creates packet/tcp header for sending the intial SYN to the server
-//   pkt    = create_empty_packet();
-//   header = __make_tcp_hdr(pkt, sizeof(struct packet));
-//   //header field designation
-//   pet_printf("We made it here");
-
-//   if ( pet_socket_recv_capacity(con->sock) > 65535 ){
-//     recv_win = 65535;
-//   }
-//   else {
-//     recv_win = 65535 - pet_socket_recv_capacity(con->sock); 
-//   }
-
-
-//   header->src_port   = htons(local_port);
-//   header->dst_port   = htons(remote_port);
-//   header->seq_num    = last_ack_num;
-//   header->ack_num    = last_seq_num + sizeof(recv_win);
-//   header->flags.ACK  = 1;
-//   header->recv_win   = recv_win;
-//   header->header_len = 5;
-
-//   //actually sends the TCP Header
-//   header->checksum   = __calculate_chksum(con, con->ipv4_tuple.remote_ip, pkt);
-//   ipv4_pkt_tx(pkt, con->ipv4_tuple.remote_ip);
-
-//   con->con_state = SYN_SENT;
-
-//   print_tcp_header(header);
-// }
-
-
 
 
 /*Private method for Sending a FIN response*/
@@ -321,7 +298,7 @@ __send_FIN(struct tcp_connection * con){
   int recv_win;
  //creates packet/tcp header for sending the intial SYN to the server
   pkt    = create_empty_packet();
-  header = __make_tcp_hdr(pkt, sizeof(struct packet));
+  header = __make_tcp_hdr(pkt, 0);
   //designates the recv window
   if ( pet_socket_recv_capacity(con->sock) > 65535 ){
     recv_win = 65535;
@@ -347,52 +324,6 @@ __send_FIN(struct tcp_connection * con){
 
   con->con_state = SYN_SENT;
 }
-
-
-
-
-/*Private method for sending a FIN-ACK response*/
-/*
-static void 
-__send_FINACK(){
-  //variable intialization
-  struct packet * pkt;
-  struct tcp_raw_hdr    * header     = NULL;
-  int recv_win;
- //creates packet/tcp header for sending the intial SYN to the server
-  pkt    = create_empty_packet();
-  header = __make_tcp_hdr(pkt, sizeof(struct packet));
-  //designates the recv window
-  if ( pet_socket_recv_capacity(sock) > 65535 ){
-    recv_win = 65535;
-  }
-  else {
-    recv_win = 65535 - pet_socket_recv_capacity(sock); 
-  }
-  //header field designation
-  header->src_port   = htons(local_port);
-  header->dst_port   = htons(remote_port);
-  header->seq_num    = last_ack_num;
-  header->ack_num    = last_seq_num + sizeof(recv_win);
-  header->flags.FIN  = 1;
-  header->flags.ACK  = 1;
-  header->recv_win   = recv_win;
-  header->header_len = 5;
-
-  //actually sends the TCP Header
-  header->checksum   = __calculate_chksum(con, con->ipv4_tuple.remote_ip, pkt);
-  ipv4_pkt_tx(pkt, con->ipv4_tuple.remote_ip);
-
-  print_tcp_header(header);
-
-  con->con_state = SYN_SENT;
-
-  print_tcp_header(header);
-}
-*/
-
-
-
 /*Pretty much passes in a sock, creates a new connection from that socket and the local_addr and local_port values
 on an empty connection. It then adds the sock passed in to the new connection created which represents the listening
 connection. Then on success it returns 0.*/
@@ -414,6 +345,8 @@ tcp_listen(struct socket    * sock,
   //adds the socket to the tcp_connection
   add_sock_to_tcp_con(tcp_state->con_map, con, sock);
   con->con_state = LISTEN;
+
+  con->stop = 0;
       
   put_and_unlock_tcp_con(con);
 
@@ -427,10 +360,6 @@ tcp_listen(struct socket    * sock,
     if (con) put_and_unlock_tcp_con(con);
       return -1;   
 }
-
-
-
-
 /*Beginning of an Active Connection. Starts a Three Way by sending a SYN, then expecting a SYN-ACK response 
 from the server followed by sending an ACK back to the client. Once that is done, the socket layer will be notified
 that a connection has occured. */
@@ -443,7 +372,7 @@ tcp_connect_ipv4(struct socket    * sock,
 {
   //variable intilization for connection
   struct tcp_state      * tcp_state   = petnet_state->tcp_state;
-  struct tcp_connection * con         = create_ipv4_tcp_con(tcp_state->con_map, local_addr, remote_addr , local_port, remote_port );
+  struct tcp_connection * con         = create_ipv4_tcp_con(tcp_state->con_map, ipv4_addr_from_str("192.168.201.12"), ipv4_addr_from_str("192.168.201.1") , local_port, remote_port );
 
   //error checking
   if ( con == NULL){
@@ -456,6 +385,7 @@ tcp_connect_ipv4(struct socket    * sock,
   __send_SYN(con, local_port, remote_port, sock);
 
   con->con_state = SYN_SENT;
+  con->stop = 0;
   
   put_and_unlock_tcp_con(con);
   return 0;
@@ -481,6 +411,12 @@ tcp_send(struct socket * sock)
     struct tcp_connection * con         = get_and_lock_tcp_con_from_sock(tcp_state->con_map, sock);
 
     //checks if the connection state is established
+
+    if ( con->stop ){
+      log_error("Waiting for an ACK response\n");
+      goto err;
+    }
+
     if (con->con_state != ESTABLISHED){
         log_error("TCP connection is not established\n");
         goto err;
@@ -497,6 +433,10 @@ err:
     if (con) put_and_unlock_tcp_con(con);   
     return -1;
 }
+
+
+
+
 /* Petnet assumes SO_LINGER semantics, so if we'ere here there is no pending write data */
 int
 tcp_close(struct socket * sock)
@@ -504,6 +444,8 @@ tcp_close(struct socket * sock)
   //gets the connection from the tcp_state using the socket
   struct tcp_state      * tcp_state   = petnet_state->tcp_state;
   struct tcp_connection * con         = get_and_lock_tcp_con_from_sock(tcp_state->con_map, sock);
+
+  pet_printf("Closing TCP Connection");
 
   if (con == NULL){
     log_error("Cannot Close TCP connection that doesn't exist");
@@ -522,6 +464,7 @@ err:
 
 }
 
+
 /*Private method that deals with the pkt recieving for an ipv4 packet.
 This function takes the data from the transport layer and passes it to socket layer
 and then sets the ACK NUMBER in the TCP header*/
@@ -529,7 +472,7 @@ static int
 __tcp_pkt_rx_ipv4(struct packet * pkt)
 {
   struct tcp_state * tcp_state = petnet_state->tcp_state;
-  struct tcp_connection * con = NULL;
+  struct tcp_connection * con;
   //struct tcp_connection * new_con = NULL;
   struct tcp_connection * listen_con = NULL;
   struct ipv4_raw_hdr * ipv4_hdr  = (struct ipv4_raw_hdr *)pkt->layer_3_hdr;
@@ -539,16 +482,8 @@ __tcp_pkt_rx_ipv4(struct packet * pkt)
   //void * payload = NULL;
   struct socket * new_sock;
 
-  //pet_printf("Entering rx\n");
-  //ipv4_pkt_rx(pkt);
-
   struct ipv4_addr * src_ip = NULL;
   struct ipv4_addr * dst_ip = NULL;
-  uint32_t last_seq_num;
-  uint32_t last_ack_num;
-
-  uint32_t send_seq_num;
-  uint32_t send_ack_num;
 
   int ret = 0;
   int len;
@@ -562,86 +497,76 @@ __tcp_pkt_rx_ipv4(struct packet * pkt)
     print_tcp_header(tcp_hdr);
   }
 
-  // pet_printf("Entering rx3\n");
-  //sets the ack number
-  last_seq_num = ntohs(tcp_hdr->seq_num);
-  last_ack_num = ntohs(tcp_hdr->ack_num);
-
-  send_seq_num = last_ack_num;
-  send_ack_num = last_seq_num + (uint32_t) 1;
   //tcp_hdr->ack_num = last_seq_num + sizeof(struct packet);
-  pet_printf("last Seq Number: %d\n", last_seq_num);
-  pet_printf("last ACK Number: %d\n", last_ack_num);
 
   src_ip = ipv4_addr_from_octets(ipv4_hdr->src_ip);
   dst_ip = ipv4_addr_from_octets(ipv4_hdr->dst_ip);
 
-  print_tcp_header(tcp_hdr);
+  //if we recieve a SYN from the client, that means they want to connect to the server
+  if (tcp_hdr->flags.SYN == 1 && tcp_hdr->flags.ACK == 0) {
 
- //pet_printf("Entering rx4\n");
-  /*Here if the con returns a null for whatever reason in such a case that get_and_lock_tcp_con_from_ipv4() return null, we need
-  to create the connection, so in the if statement con == NULL, we essentially create a new connection using create_ipv_tcp_ipv4.
-  After we create that new connection.  */
-  con = get_and_lock_tcp_con_from_ipv4(tcp_state->con_map, dst_ip, src_ip, ntohs(tcp_hdr->dst_port), ntohs(tcp_hdr->src_port));
-  //pet_printf("Entering rx5\n");
+    print_tcp_header(tcp_hdr);
 
-  if (con == NULL) {
-   // pet_printf("Seg Check\n");
     con = create_ipv4_tcp_con(tcp_state->con_map, dst_ip, src_ip, ntohs(tcp_hdr->dst_port), ntohs(tcp_hdr->src_port));
     //gets the listening socket.
     listen_con = get_and_lock_tcp_con_from_ipv4(tcp_state->con_map, dst_ip, ipv4_addr_from_str("0.0.0.0") , ntohs(tcp_hdr->dst_port), 0);
     
     new_sock = pet_socket_accepted(listen_con->sock, src_ip ,ntohs(tcp_hdr->src_port));
-    pet_printf("New Socket Recieve Capacity: %d\n", pet_socket_recv_capacity(new_sock));
-
 
     put_and_unlock_tcp_con(listen_con);
 
     add_sock_to_tcp_con(tcp_state->con_map, con, new_sock);
 
-    //put_and_unlock_tcp_con(con);
-
     send_pkt = create_empty_packet();
-    send_tcp_hdr = __make_tcp_hdr(send_pkt, sizeof(send_pkt));
+    send_tcp_hdr = __make_tcp_hdr(send_pkt, 0);
     //designates the recv window
-    if ( pet_socket_recv_capacity(new_sock) > 65535 ){
+    if ( pet_socket_recv_capacity(con->sock) > 65535 ){
       recv_win = 65535;
     }
     else{
-      recv_win = 65535 - pet_socket_recv_capacity(new_sock); 
+      recv_win = 65535 - pet_socket_recv_capacity(con->sock); 
     }
+
+    recv_win = 65535;
 
     len = sizeof(struct tcp_raw_hdr);
     // pet_printf("Seg Check\n");
     send_pkt->payload_len = len;
     send_pkt->payload = pet_malloc(len);
 
-    send_tcp_hdr->src_port   = (tcp_hdr->dst_port);
-    send_tcp_hdr->dst_port   = (tcp_hdr->src_port);
-    send_tcp_hdr->seq_num    = htons(send_ack_num);
-    send_tcp_hdr->ack_num    = htons(send_seq_num);
-    send_tcp_hdr->header_len = send_pkt->layer_4_hdr_len;
+    send_tcp_hdr->src_port   = htons(con->ipv4_tuple.local_port);
+    send_tcp_hdr->dst_port   = htons(con->ipv4_tuple.remote_port);
+    send_tcp_hdr->seq_num    = htonl(1);
+    send_tcp_hdr->ack_num    = htonl(ntohl(tcp_hdr->seq_num) + 1);
+    send_tcp_hdr->header_len = 5;
     send_tcp_hdr->flags.SYN  = 1;
     send_tcp_hdr->flags.ACK  = 1;
     send_tcp_hdr->recv_win = recv_win;
   // pet_printf("Seg Check\n");
   //since we are only sending header, len = header_len;
 
+    print_tcp_header(send_tcp_hdr);
     send_tcp_hdr->checksum = __calculate_chksum(con, con->ipv4_tuple.remote_ip, send_pkt);
-    listen_con->con_state = SYN_RCVD;
     ipv4_pkt_tx(send_pkt, src_ip);
 
-    //pet_socket_connected(new_con->sock);
-     pet_put_socket(new_sock); 
-     pet_free(send_pkt->payload);
-     put_and_unlock_tcp_con(con);
+    con->con_state = SYN_RCVD;
+
+    con->last_seq_num = ntohl(tcp_hdr->seq_num);
+    con->last_ack_num = ntohl(tcp_hdr->ack_num);
+
+    put_and_unlock_tcp_con(con);
 
   }
   //if a SYN-ACK is recieved from the server.
   else if ( tcp_hdr->flags.SYN && tcp_hdr->flags.ACK ){
   //creates packet/tcp header for sending the intial SYN to the server
+
+    pet_printf("Recieved a SYN-ACK\n");
+
+    con = get_and_lock_tcp_con_from_ipv4(tcp_state->con_map,  dst_ip, src_ip, ntohs(tcp_hdr->dst_port), ntohs(tcp_hdr->src_port));
+
     send_pkt   = create_empty_packet();
-    send_tcp_hdr = __make_tcp_hdr(send_pkt, sizeof(struct packet));
+    send_tcp_hdr = __make_tcp_hdr(send_pkt, 0);
       //designates the recv window
     if ( pet_socket_recv_capacity(con->sock) > 65535 ){
       recv_win = 65535;
@@ -652,8 +577,8 @@ __tcp_pkt_rx_ipv4(struct packet * pkt)
     //header field designation
     send_tcp_hdr->src_port   = htons(con->ipv4_tuple.local_port);
     send_tcp_hdr->dst_port   = htons(con->ipv4_tuple.remote_port);
-    send_tcp_hdr->seq_num    = htons(send_seq_num);
-    send_tcp_hdr->ack_num    = htons(send_ack_num);
+    send_tcp_hdr->seq_num    = htonl(1);
+    send_tcp_hdr->ack_num    = htonl(ntohl(tcp_hdr->seq_num) + 1);
     send_tcp_hdr->flags.ACK  = 1;
     send_tcp_hdr->recv_win   = recv_win;
     send_tcp_hdr->header_len = 5;
@@ -664,50 +589,61 @@ __tcp_pkt_rx_ipv4(struct packet * pkt)
 
     //states connection variables 
     con->con_state    = ESTABLISHED;
-    con->last_seq_num = send_seq_num;
-    con->last_ack_num = send_ack_num;
+    con->last_seq_num = ntohl(tcp_hdr->seq_num);
+    con->last_ack_num = ntohl(tcp_hdr->ack_num);
 
     //signals the socket layer that a connection has been Established
     pet_socket_connected(con->sock);
+
+    put_and_unlock_tcp_con(con);
 
       //    __send_ACK(con, ntohs(tcp_hdr->dst_port), ntohs(tcp_hdr->src_port), last_seq_num, last_ack_num);
   }
   //if a FIN-ACK is recieved
   else if ( tcp_hdr->flags.FIN && tcp_hdr->flags.ACK ){
   //creates packet/tcp header for sending the intial SYN to the server
+    con = get_and_lock_tcp_con_from_ipv4(tcp_state->con_map,  dst_ip, src_ip, ntohs(tcp_hdr->dst_port), ntohs(tcp_hdr->src_port));
+    if ( con == NULL ){
+      //log_error("Connection Doesn't Exist");
+      goto out;
+    }
+
     send_pkt   = create_empty_packet();
-    send_tcp_hdr = __make_tcp_hdr(send_pkt, sizeof(struct packet));
+    send_tcp_hdr = __make_tcp_hdr(send_pkt, 0);
       //designates the recv window
-    if ( pet_socket_recv_capacity(con->sock) > 65535 ){
-      recv_win = 65535;
-    }
-    else {
-      recv_win = 65535 - pet_socket_recv_capacity(con->sock); 
-    }
+    // if ( pet_socket_recv_capacity(con->sock) > 65535 ){
+    //   recv_win = 65535;
+    // }
+    // else {
+    //   recv_win = 65535 - pet_socket_recv_capacity(con->sock); 
+    // }
     //header field designation
     send_tcp_hdr->src_port   = htons(con->ipv4_tuple.local_port);
     send_tcp_hdr->dst_port   = htons(con->ipv4_tuple.remote_port);
-    send_tcp_hdr->seq_num    = htons(send_seq_num);
-    send_tcp_hdr->ack_num    = htons(send_ack_num);
+    send_tcp_hdr->seq_num    = htonl(1);;
+    send_tcp_hdr->ack_num    = htonl(ntohl(tcp_hdr->seq_num) + 1);
     send_tcp_hdr->flags.ACK  = 1;
-    send_tcp_hdr->recv_win   = recv_win;
+    send_tcp_hdr->recv_win   = 65535;
     send_tcp_hdr->header_len = 5;
 
-    send_tcp_hdr->checksum = __calculate_chksum(con, con->ipv4_tuple.remote_ip, send_pkt);
     print_tcp_header(send_tcp_hdr);
     ipv4_pkt_tx(send_pkt, src_ip);
 
     //states connection variables 
     con->con_state = TIME_WAIT;
 
-    con->last_seq_num = send_seq_num;
-    con->last_ack_num = send_ack_num;
+    con->last_seq_num = ntohl(tcp_hdr->seq_num);
+    con->last_ack_num = ntohl(tcp_hdr->ack_num);
 
+    put_and_unlock_tcp_con(con);
     //signals the socket layer that a connection has been Established
  }
  //Here if the application only recieves a FIN from the source, here we have to deal with a few different states.
  else if ( tcp_hdr->flags.FIN ){
   //creates packet/tcp header for sending the intial SYN to the server
+
+    con = get_and_lock_tcp_con_from_ipv4(tcp_state->con_map, dst_ip, src_ip, ntohs(tcp_hdr->dst_port), ntohs(tcp_hdr->src_port));
+
     send_pkt   = create_empty_packet();
     send_tcp_hdr = __make_tcp_hdr(send_pkt, sizeof(struct packet));
       //designates the recv window
@@ -720,8 +656,8 @@ __tcp_pkt_rx_ipv4(struct packet * pkt)
     //header field designation
     send_tcp_hdr->src_port   = htons(con->ipv4_tuple.local_port);
     send_tcp_hdr->dst_port   = htons(con->ipv4_tuple.remote_port);
-    send_tcp_hdr->seq_num    = htons(send_seq_num);
-    send_tcp_hdr->ack_num    = htons(send_ack_num);
+    send_tcp_hdr->seq_num    = htonl(1);
+    send_tcp_hdr->ack_num    = htonl(ntohl(tcp_hdr->seq_num) + 1);
     send_tcp_hdr->flags.ACK  = 1;
     send_tcp_hdr->recv_win   = recv_win;
     send_tcp_hdr->header_len = 5;
@@ -740,48 +676,57 @@ __tcp_pkt_rx_ipv4(struct packet * pkt)
     else if ( con->con_state == FIN_WAIT2 ){
       con->con_state = TIME_WAIT;
     }
-    con->last_seq_num = send_seq_num;
-    con->last_ack_num = send_ack_num;
+    con->last_seq_num = ntohl(tcp_hdr->seq_num);
+    con->last_ack_num = ntohl(tcp_hdr->ack_num);
  }
+  else if ( tcp_hdr->flags.ACK && tcp_hdr->flags.PSH ){
+    con = get_and_lock_tcp_con_from_ipv4(tcp_state->con_map, dst_ip, src_ip, ntohs(tcp_hdr->dst_port), ntohs(tcp_hdr->src_port));
+ //if the state is established, then that means there's data coming.
+  if ( con->con_state == ESTABLISHED){
+
+    con->stop = 0;
+
+    ret = pet_socket_received_data(con->sock,  __get_payload(pkt), (size_t) __get_payload_len(pkt));
+
+    if (ret == -1) {
+      log_error("Failed to receive data\n");
+      goto out;
+    }
+  }
+  else if ( con->con_state == SYN_RCVD){ 
+    pet_printf("Now Entering Established State");
+    con->con_state = ESTABLISHED;
+  }
+  put_and_unlock_tcp_con(con);
+  }
  //Anytime an ACK is recieved adjust the state of the connection
  else if ( tcp_hdr->flags.ACK ){
   //if the connection is in SYN_RCVD then the connection is established.
-  if ( con->con_state == SYN_RCVD ){
-    pet_socket_connected(con->sock);
-    con->con_state = ESTABLISHED;
-  }
-  //Technically this where it goes into TIME wait but for now we have this as close
-  else if ( con->con_state == CLOSING ){
-    con->con_state = CLOSED;
-    pet_socket_closed(con->sock);
-  }
-  //if the connection recieves the last ACK, then it closes the socket connection.
-  else if ( con->con_state == LAST_ACK ){
-    con->con_state = CLOSED;
-    pet_socket_closed(con->sock);
-  }
-  //if we get here, that means the connection is ESTABLISHED already and this is just a normal recieve buffer
-  else{
-    if ( pet_socket_connected(con->sock) != 0){
+  con = get_and_lock_tcp_con_from_ipv4(tcp_state->con_map, dst_ip, src_ip, ntohs(tcp_hdr->dst_port), ntohs(tcp_hdr->src_port));
+
+  //if the state is established, then that means there's data coming.
+  if ( con->con_state == ESTABLISHED){
+
+    con->stop = 0;
+
+    ret = pet_socket_received_data(con->sock,  __get_payload(pkt), (size_t) __get_payload_len(pkt));
+
+    if (ret == -1) {
+      log_error("Failed to receive data\n");
       goto out;
     }
-
-    ret = pet_socket_received_data(con->sock,  __get_payload(pkt), (size_t) __get_payload(pkt));
-      
-    if (ret == -1) {
-        log_error("Failed to receive data\n");
-        goto out;
-    }
   }
- }
+  else if ( con->con_state == SYN_RCVD){ 
+    pet_printf("Now Entering Established State");
+    con->con_state = ESTABLISHED;
 
-  put_and_unlock_tcp_con(con); 
-  pet_printf("TCP Successfully Processed Packet\n");
+  }
+  put_and_unlock_tcp_con(con);
+ }
   return 0;
 
   out:
     if (con) put_and_unlock_tcp_con(con);
-    pet_printf("TCP Received Failed\n");
     return -1; 
   }
 
